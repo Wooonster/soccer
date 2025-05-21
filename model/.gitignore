@@ -1,0 +1,5 @@
+figprocess/
+goal/
+**.zip
+.ipynb_checkpoints/
+model_ckpts/
