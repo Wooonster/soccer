@@ -4,10 +4,10 @@ import torch
 import cv2
 import numpy as np
 from datetime import timedelta
-from moviepy import VideoFileClip
+from moviepy.editor import VideoFileClip
 from dataclasses import dataclass
 from typing import List, Dict
-
+from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from model.eca_res50_model import eca_resnet50
 
@@ -31,10 +31,11 @@ class ClipInfo:
 
 @dataclass
 class ShotResult:
-    frame_idx: int
-    timestamp: float
-    confidence: float
-    clip_path: str
+    video_path: str
+    frame_idx: list[int]
+    timestamp: list[float]
+    confidence: list[float]
+    clip_path: list[str]
 
 def get_metadata(clip_mode, before_secs, after_secs):
     clip_info = ClipInfo(clip_mode, before_secs, after_secs)
@@ -67,7 +68,7 @@ def temporal_smooth(predictions: List[float], window_size: int = 5, threshold: f
     
     return smoothed
 
-def process_video(clip_info: ClipInfo, video_path: str) -> List[ShotResult]:
+def process_video(clip_info: ClipInfo, video_path: str) -> ShotResult:
     if not os.path.exists(video_path):
         return None
     
@@ -79,14 +80,20 @@ def process_video(clip_info: ClipInfo, video_path: str) -> List[ShotResult]:
     
     # Get video properties
     fps = cap.get(cv2.CAP_PROP_FPS)
+    print(f'video fps: {fps}')
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
+    print(f'Total frames: {total_frames}')
     # Load video with moviepy for clip extraction
     video = VideoFileClip(video_path)
     
     # Store frame predictions and results
     frame_predictions = []
-    shot_results = []
+    
+    # Initialize lists for collecting results
+    frame_indices = []
+    timestamps = []
+    confidences = []
+    clip_paths = []
     
     # 2. Process frames
     frame_idx = 0
@@ -104,15 +111,21 @@ def process_video(clip_info: ClipInfo, video_path: str) -> List[ShotResult]:
             frame_predictions.append(shot_confidence)
             
             frame_idx += 1
+
+    print(f'Frame predictions: {len(frame_predictions)}')
+    print(f'frame_predictions > 0.75: {sum([1 for conf in frame_predictions if conf > 0.75])}')
     
     # 4. Apply temporal smoothing
-    is_shot_frames = temporal_smooth(frame_predictions, window_size=5, threshold=0.7)
-    
+    is_shot_frames = temporal_smooth(frame_predictions, window_size=4, threshold=0.75)
+    # is_shot_frames = [True if conf > 0.75 else False for conf in frame_predictions]
+    # print(f'Is shot frames: {len(is_shot_frames)}')
+
     # 5. Process shot frames and save clips
-    os.makedirs("clips", exist_ok=True)
+    clips_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clips')
+    os.makedirs(clips_folder, exist_ok=True)
     
     frame_idx = 0
-    for is_shot, confidence in zip(is_shot_frames, frame_predictions):
+    for is_shot, confidence in tqdm(zip(is_shot_frames, frame_predictions)):
         if is_shot:
             # Get timestamp
             timestamp = frame_idx / fps
@@ -122,30 +135,41 @@ def process_video(clip_info: ClipInfo, video_path: str) -> List[ShotResult]:
             end_time = min(video.duration, timestamp + clip_info.after_secs)
             
             try:
-                # Use subclipped instead of subclip
-                clip = video.subclipped(t_start=start_time, t_end=end_time)
-                output_path = f"clips/shot_{frame_idx}.mp4"
+                # Use standard position parameters for subclip
+                clip = video.subclip(start_time, end_time)
+                output_path = os.path.join(clips_folder, f"shot_{frame_idx}.mp4")
                 clip.write_videofile(output_path, codec='libx264', audio_codec='aac')
                 clip.close()
                 
-                # Record result
-                shot_results.append(ShotResult(
-                    frame_idx=frame_idx,
-                    timestamp=timestamp,
-                    confidence=confidence,
-                    clip_path=output_path
-                ))
+                # Add results to our lists
+                frame_indices.append(frame_idx)
+                timestamps.append(timestamp)
+                confidences.append(confidence)
+                clip_paths.append(f"shot_{frame_idx}.mp4")  # 只保存文件名，不包含路径
+                
+                print(f"Saved clip for frame {frame_idx} at {output_path}")
             except Exception as e:
                 print(f"Error saving clip at frame {frame_idx}: {e}")
                 continue
         
         frame_idx += 1
     
+    # Create a single ShotResult containing all results
+    shot_result = None
+    if frame_indices:
+        shot_result = ShotResult(
+            video_path=video_path,
+            frame_idx=frame_indices,
+            timestamp=timestamps,
+            confidence=confidences,
+            clip_path=clip_paths
+        )
+    
     # Cleanup
     cap.release()
     video.close()
     
-    return shot_results
+    return shot_result
 
 
 
