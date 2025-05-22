@@ -21,7 +21,7 @@
           支持多文件上传，文件名会显示在下方
         </div>
         <!-- 可滚动的文件列表 -->
-        <div class="scrollable-file-list" style="min-height: 250px;">
+        <div class="scrollable-file-list" style="min-height: 400px;">
           <div v-for="(file, index) in fileList" :key="index" class="file-item">
             <el-icon><document /></el-icon>
             <span class="file-name">{{ file.name }}</span>
