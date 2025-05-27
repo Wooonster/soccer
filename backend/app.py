@@ -1,17 +1,18 @@
 import os
+import unicodedata
+
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-import unicodedata
-
-from model_process import get_metadata, process_video
+# from eca_process import get_metadata, process_video
+from tsm_process import get_metadata, process_video
 
 app = Flask(__name__)
 CORS(app)  # 启用CORS以允许前端与后端通信
 
 # 配置上传文件的目录
 UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'uploads')
-ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv'}
+ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'wmv', 'flv', 'mkv', 'png'}
 
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
@@ -19,17 +20,15 @@ if not os.path.exists(UPLOAD_FOLDER):
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 4 * 500 * 1024 * 1024  # 限制上传文件大小为 4 GB
 
-# 全局变量，用于存储最后设置的 clip_info
+# 全局变量 存储 clip_info
 current_clip_info = None
 
 def normalize_filename(filename):
     # 规范化 Unicode 字符
     filename = unicodedata.normalize('NFKC', filename)
-    # 保留原始文件扩展名
     name, ext = os.path.splitext(filename)
-    # 使用 secure_filename 处理基本名称
     safe_name = secure_filename(name)
-    # 如果文件名完全被过滤掉了，使用默认名称
+
     if not safe_name:
         safe_name = 'video'
     return safe_name + ext
@@ -213,6 +212,7 @@ def process_videos():
                 'success': False,
                 'message': 'No shot frames detected in any video'
             })
+        
 
 def merge_clips(clip_paths):
     """合并多个视频片段为一个视频"""
@@ -250,6 +250,7 @@ def merge_clips(clip_paths):
     except Exception as e:
         print(f"Error merging clips: {e}")
         return None
+
 
 @app.route('/api/clear-all', methods=['POST'])
 def clear_all_data():

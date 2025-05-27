@@ -3,7 +3,6 @@ import sys
 import torch
 import cv2
 import numpy as np
-from datetime import timedelta
 from moviepy.editor import VideoFileClip
 from dataclasses import dataclass
 from typing import List, Dict
@@ -15,13 +14,6 @@ from model.eca_res50_model import eca_resnet50
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
 print(f'device detected: {device}')
-
-# load model
-ckpt = '../model/model_ckpts/eca_resnet50_best.pth'
-model = eca_resnet50(k_size=[3, 5, 5, 7], num_classes=2)
-model.load_state_dict(torch.load(ckpt, map_location=device))
-model.to(device)
-model.eval()
 
 @dataclass
 class ClipInfo:
@@ -37,6 +29,15 @@ class ShotResult:
     confidence: list[float]
     clip_path: list[str]
 
+
+""" ECA-ResNet50 """
+ckpt = '../model/model_ckpts/eca_resnet50_best.pth'
+model = eca_resnet50(k_size=[3, 5, 5, 7], num_classes=2)
+model.load_state_dict(torch.load(ckpt, map_location=device))
+model.to(device)
+model.eval()
+
+ 
 def get_metadata(clip_mode, before_secs, after_secs):
     clip_info = ClipInfo(clip_mode, before_secs, after_secs)
     return clip_info
@@ -67,6 +68,28 @@ def temporal_smooth(predictions: List[float], window_size: int = 5, threshold: f
         smoothed.append(sum(window) / window_size > threshold)
     
     return smoothed
+
+def process_image(image_path: str) -> ShotResult:
+    if not os.path.exists(image_path):
+        return None
+    
+    image = cv2.imread(image_path)
+    image = preprocess_frame(image)
+
+    with torch.no_grad():
+        output = model(image)
+        prediction = torch.softmax(output, dim=1)
+        conf = prediction[0][1].item()
+    
+    results = ShotResult(
+        video_path=image_path,
+        frame_idx=[0],
+        timestamp=[0],
+        confidence=[conf],
+        clip_path=[image_path]
+    )
+    print(f'Shot result: {results}')
+    return results
 
 def process_video(clip_info: ClipInfo, video_path: str) -> ShotResult:
     if not os.path.exists(video_path):
