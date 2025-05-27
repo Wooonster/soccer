@@ -2,6 +2,4 @@ figprocess/
 goal/
 **.zip
 .ipynb_checkpoints/
-model_ckpts/eca_resnet50_k3557.pth.tar
-model_ckpts/eca_tsm_best_20250518_125250.pth
-model_ckpts/resnet50_best.pth
+model_ckpts/

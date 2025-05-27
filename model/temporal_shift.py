@@ -102,8 +102,9 @@ def make_temporal_shift(net, n_segment, n_div=8, place='blockres', temporal_pool
     assert n_segment_list[-1] > 0
     print('=> n_segment per stage: {}'.format(n_segment_list))
 
-    import torchvision
-    if isinstance(net, torchvision.models.ResNet):
+    # import torchvision
+    # if isinstance(net, torchvision.models.ResNet):
+    if "ResNet" in str(type(net)):
         if place == 'block':
             def make_block_temporal(stage, this_segment):
                 blocks = list(stage.children())
