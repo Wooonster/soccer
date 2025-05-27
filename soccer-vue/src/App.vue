@@ -106,9 +106,15 @@ function previewClip(clipPath) {
   const filename = clipPath.includes('/') ? clipPath.split('/').pop() : clipPath
   
   // 设置预览视频的路径
-  previewVideo.value = `http://localhost:50001/api/download/${filename}`
+  const videoUrl = `http://localhost:50001/api/download/${filename}`
+  previewVideo.value = videoUrl
+  
   // 同时更新下载链接
   downloadUrl.value = previewVideo.value
+  
+  console.log('Preview video URL:', videoUrl)
+  console.log('Original clip path:', clipPath)
+  console.log('Extracted filename:', filename)
 }
 
 // 下载合成视频
