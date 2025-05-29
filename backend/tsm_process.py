@@ -110,22 +110,27 @@ def load_video_frames(video_path, n_segment=8):
     cap.release()
     return frames
 
-def analyze_video_for_shots(video_path, model, n_segment=8, step_size=4, shot_threshold=0.7, clip_info: ClipInfo = None):
+def analyze_video_for_shots_and_extract(video_path, model, n_segment=8, step_size=4, shot_threshold=0.7, clip_info: ClipInfo = None, output_dir="clips"):
     """
-    使用滑动窗口分析视频，找到打门关键帧
+    高效的视频分析：检测到shot后立即提取片段并跳过相应时间范围
     Args:
         video_path: 视频文件路径
         model: 训练好的TSM模型
         n_segment: 每个窗口的帧数
         step_size: 滑动窗口步长
         shot_threshold: 打门检测的置信度阈值
+        clip_info: 包含提取片段前后秒数的信息
+        output_dir: 输出目录
     Returns:
-        list: 包含打门信息的字典列表，每个字典包含frame_index, timestamp, confidence
+        tuple: (shot_detections, extracted_clip_paths)
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"Error: Cannot open video {video_path}")
-        return []
+        return [], []
+    
+    # 创建输出目录
+    os.makedirs(output_dir, exist_ok=True)
     
     try:
         # 获取视频信息
@@ -135,19 +140,22 @@ def analyze_video_for_shots(video_path, model, n_segment=8, step_size=4, shot_th
         
         print(f"Video info: {total_frames} frames, {fps:.2f} FPS, {duration:.2f}s")
         
-        # 不一次性加载所有帧 而是使用滑动窗口的方式逐段处理 
-        # 避免内存不足/内存泄露
         shot_detections = []
+        extracted_clip_paths = []
+        current_idx = 0  # 当前处理位置
+        extracted_count = 0
         
-        # 滑窗处理
-        for start_idx in range(0, total_frames - n_segment + 1, step_size):
-            end_idx = start_idx + n_segment
+        # 计算最小跳过间隔（以帧为单位）
+        min_skip_frames = int((clip_info.before_secs + clip_info.after_secs) * fps)
+        
+        while current_idx < total_frames - n_segment + 1:
+            end_idx = current_idx + n_segment
             
             # 读取当前窗口的帧
             window_frames = []
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, current_idx)
             
-            for frame_idx in range(start_idx, min(end_idx, total_frames)):
+            for frame_idx in range(current_idx, min(end_idx, total_frames)):
                 ret, frame = cap.read()
                 if not ret:
                     print(f"Warning: Failed to read frame {frame_idx}, stopping analysis")
@@ -174,19 +182,47 @@ def analyze_video_for_shots(video_path, model, n_segment=8, step_size=4, shot_th
                     # 如果检测到打门且置信度超过阈值
                     if shot_confidence > shot_threshold:
                         # 计算关键帧索引（窗口中间的帧）
-                        key_frame_idx = start_idx + n_segment // 2
+                        key_frame_idx = current_idx + n_segment // 2
                         timestamp = key_frame_idx / fps
                         
                         shot_info = {
                             'frame_index': key_frame_idx,
                             'timestamp': timestamp,
                             'confidence': shot_confidence,
-                            'window_start': start_idx,
+                            'window_start': current_idx,
                             'window_end': end_idx - 1
                         }
                         
                         shot_detections.append(shot_info)
                         print(f"Shot detected at frame {key_frame_idx} (t={timestamp:.2f}s), confidence: {shot_confidence:.4f}")
+                        
+                        # 立即提取视频片段
+                        start_frame = max(0, int(key_frame_idx - clip_info.before_secs * fps))
+                        end_frame = int(key_frame_idx + clip_info.after_secs * fps)
+                        
+                        extracted_count += 1
+                        output_filename = f"shot_{extracted_count}_frame{key_frame_idx}_t{timestamp:.1f}s_conf{shot_confidence:.3f}.mp4"
+                        output_path = os.path.join(output_dir, output_filename)
+                        
+                        # 提取视频片段
+                        success = extract_video_segment(video_path, start_frame, end_frame, output_path)
+                        if success:
+                            extracted_clip_paths.append(output_path)
+                            print(f"Extracted clip: {output_filename}")
+                        else:
+                            print(f"Failed to extract clip: {output_filename}")
+                            extracted_count -= 1
+                        
+                        # 跳过已处理的时间范围，避免重复检测
+                        # 计算下一个开始位置：跳过提取片段的整个时间范围
+                        next_start_frame = end_frame + step_size
+                        current_idx = max(current_idx + step_size, next_start_frame)
+                        
+                        print(f"Skipping to frame {current_idx} to avoid overlap")
+                        
+                    else:
+                        # 没有检测到shot，正常步进
+                        current_idx += step_size
                 
                 # 清理当前批次的 GPU 内存
                 del input_tensor, outputs, outputs_mean, probabilities
@@ -196,23 +232,24 @@ def analyze_video_for_shots(video_path, model, n_segment=8, step_size=4, shot_th
                     torch.cuda.empty_cache()
                     
             except Exception as e:
-                print(f"Error processing window starting at frame {start_idx}: {e}")
+                print(f"Error processing window starting at frame {current_idx}: {e}")
+                current_idx += step_size
                 continue
             
             # 清理当前窗口的帧数据
             del window_frames
             
             # 定期进行垃圾回收
-            if start_idx % (step_size * 400) == 0:
+            if current_idx % (step_size * 400) == 0:
                 import gc
                 gc.collect()
-                print(f"Processed {start_idx}/{total_frames} frames")
+                print(f"Processed {current_idx}/{total_frames} frames")
         
-        print(f"Successfully analyzed video with {len(shot_detections)} shot detections")
+        print(f"Successfully analyzed video with {len(shot_detections)} shot detections and {len(extracted_clip_paths)} extracted clips")
         
     except Exception as e:
         print(f"Error during video analysis: {e}")
-        return []
+        return [], []
     finally:
         # 确保 VideoCapture 被正确释放
         cap.release()
@@ -220,9 +257,7 @@ def analyze_video_for_shots(video_path, model, n_segment=8, step_size=4, shot_th
         import gc
         gc.collect()
     
-    filtered_detections = remove_duplicate_detections(shot_detections, min_time_gap=clip_info.before_secs + clip_info.after_secs)
-    
-    return filtered_detections
+    return shot_detections, extracted_clip_paths
 
 def remove_duplicate_detections(detections, min_time_gap=2.0):
     """
@@ -422,14 +457,15 @@ def process_video(clip_info: ClipInfo, video_path: str) -> ShotResult:
     step_size = 4
     shot_threshold = 0.997
     
-    # analyze video
-    shot_detections = analyze_video_for_shots(
+    # analyze video and extract clips in one pass
+    shot_detections, extracted_clip_paths = analyze_video_for_shots_and_extract(
         video_path,
         model,
         n_segment=n_segment,
         step_size=step_size, 
         shot_threshold=shot_threshold,
-        clip_info=clip_info
+        clip_info=clip_info,
+        output_dir='clips'
     )
 
     print(f"共检测到 {len(shot_detections)} 个打门动作:")
@@ -438,28 +474,19 @@ def process_video(clip_info: ClipInfo, video_path: str) -> ShotResult:
               f"Time {detection['timestamp']:.2f}s, "
               f"Confidence {detection['confidence']:.4f}")
 
-    # 提取视频片段
-    clips_dir = 'clips'
-    if shot_detections:
-        print(f"\n=== 提取视频片段 ===")
-        extract_shot_clips(
-            video_path, 
-            shot_detections, 
-            before_seconds=clip_info.before_secs, 
-            after_seconds=clip_info.after_secs,
-            output_dir=clips_dir
-        )
-        print(f"视频片段已保存到 {clips_dir} 目录")
+    if extracted_clip_paths:
+        print(f"\n=== 已提取 {len(extracted_clip_paths)} 个视频片段 ===")
+        for i, clip_path in enumerate(extracted_clip_paths):
+            print(f"Clip {i+1}: {clip_path}")
     else:
         print("未检测到打门动作")
 
-    
     shot_result = ShotResult(
         video_path=video_path,
         frame_idx=[detection['frame_index'] for detection in shot_detections],
         timestamp=[detection['timestamp'] for detection in shot_detections],
         confidence=[detection['confidence'] for detection in shot_detections],
-        clip_path=[f'backend/clips/{f}' for f in os.listdir(clips_dir) if f.endswith('.mp4')] if os.path.exists(clips_dir) else []
+        clip_path=extracted_clip_paths
     )
 
     # 清理资源
@@ -475,3 +502,18 @@ def process_video(clip_info: ClipInfo, video_path: str) -> ShotResult:
         print(f"Warning: Error during resource cleanup: {e}")
 
     return shot_result
+
+def analyze_video_for_shots(video_path, model, n_segment=8, step_size=4, shot_threshold=0.7, clip_info: ClipInfo = None):
+    """
+    兼容性函数：保持原有接口不变，但内部使用新的高效实现
+    """
+    shot_detections, _ = analyze_video_for_shots_and_extract(
+        video_path, model, n_segment, step_size, shot_threshold, clip_info, "clips"
+    )
+    
+    # 应用原有的去重逻辑
+    if clip_info:
+        filtered_detections = remove_duplicate_detections(shot_detections, min_time_gap=clip_info.before_secs + clip_info.after_secs)
+        return filtered_detections
+    else:
+        return shot_detections
