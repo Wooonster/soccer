@@ -127,63 +127,99 @@ def analyze_video_for_shots(video_path, model, n_segment=8, step_size=4, shot_th
         print(f"Error: Cannot open video {video_path}")
         return []
     
-    # 获取视频信息
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    duration = total_frames / fps
-    
-    print(f"Video info: {total_frames} frames, {fps:.2f} FPS, {duration:.2f}s")
-    
-    # 读取所有帧
-    all_frames = []
-    frame_count = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        all_frames.append(frame)
-        frame_count += 1
-    
-    cap.release()
-    print(f"Successfully loaded {len(all_frames)} frames")
-    
-    shot_detections = []
-    
-    # 滑动窗口分析
-    for start_idx in range(0, len(all_frames) - n_segment + 1, step_size):
-        end_idx = start_idx + n_segment
-        window_frames = all_frames[start_idx:end_idx]
+    try:
+        # 获取视频信息
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        duration = total_frames / fps
         
-        # 预处理当前窗口的帧
-        input_tensor = preprocess_video_frames(window_frames)
-        input_tensor = input_tensor.to(device)
+        print(f"Video info: {total_frames} frames, {fps:.2f} FPS, {duration:.2f}s")
         
-        # 推理
-        with torch.no_grad():
-            outputs = model(input_tensor)
-            # 对8个帧的预测结果进行平均
-            outputs_mean = outputs.mean(dim=0, keepdim=True)
-            probabilities = F.softmax(outputs_mean, dim=1)
-            shot_confidence = probabilities[0][0].item()  # class 0 是 'shot'
+        # 不一次性加载所有帧 而是使用滑动窗口的方式逐段处理 
+        # 避免内存不足/内存泄露
+        shot_detections = []
+        
+        # 滑窗处理
+        for start_idx in range(0, total_frames - n_segment + 1, step_size):
+            end_idx = start_idx + n_segment
             
-            # 如果检测到打门且置信度超过阈值
-            if shot_confidence > shot_threshold:
-                # 计算关键帧索引（窗口中间的帧）
-                key_frame_idx = start_idx + n_segment // 2
-                timestamp = key_frame_idx / fps
+            # 读取当前窗口的帧
+            window_frames = []
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
+            
+            for frame_idx in range(start_idx, min(end_idx, total_frames)):
+                ret, frame = cap.read()
+                if not ret:
+                    print(f"Warning: Failed to read frame {frame_idx}, stopping analysis")
+                    break
+                window_frames.append(frame)
+            
+            # 确保我们有足够的帧进行分析
+            if len(window_frames) < n_segment:
+                print(f"Warning: Only got {len(window_frames)} frames, expected {n_segment}")
+                break
+            
+            # 预处理当前窗口的帧
+            try:
+                input_tensor = preprocess_video_frames(window_frames)
+                input_tensor = input_tensor.to(device)
                 
-                shot_info = {
-                    'frame_index': key_frame_idx,
-                    'timestamp': timestamp,
-                    'confidence': shot_confidence,
-                    'window_start': start_idx,
-                    'window_end': end_idx - 1
-                }
+                with torch.no_grad():
+                    outputs = model(input_tensor)
+                    # 对 8 个帧的预测结果进行平均
+                    outputs_mean = outputs.mean(dim=0, keepdim=True)
+                    probabilities = F.softmax(outputs_mean, dim=1)
+                    shot_confidence = probabilities[0][0].item()  # class 0 是 'shot'
+                    
+                    # 如果检测到打门且置信度超过阈值
+                    if shot_confidence > shot_threshold:
+                        # 计算关键帧索引（窗口中间的帧）
+                        key_frame_idx = start_idx + n_segment // 2
+                        timestamp = key_frame_idx / fps
+                        
+                        shot_info = {
+                            'frame_index': key_frame_idx,
+                            'timestamp': timestamp,
+                            'confidence': shot_confidence,
+                            'window_start': start_idx,
+                            'window_end': end_idx - 1
+                        }
+                        
+                        shot_detections.append(shot_info)
+                        print(f"Shot detected at frame {key_frame_idx} (t={timestamp:.2f}s), confidence: {shot_confidence:.4f}")
                 
-                shot_detections.append(shot_info)
-                print(f"Shot detected at frame {key_frame_idx} (t={timestamp:.2f}s), confidence: {shot_confidence:.4f}")
+                # 清理当前批次的 GPU 内存
+                del input_tensor, outputs, outputs_mean, probabilities
+                if device.type == 'mps':
+                    torch.mps.empty_cache()
+                elif device.type == 'cuda':
+                    torch.cuda.empty_cache()
+                    
+            except Exception as e:
+                print(f"Error processing window starting at frame {start_idx}: {e}")
+                continue
+            
+            # 清理当前窗口的帧数据
+            del window_frames
+            
+            # 定期进行垃圾回收
+            if start_idx % (step_size * 400) == 0:
+                import gc
+                gc.collect()
+                print(f"Processed {start_idx}/{total_frames} frames")
+        
+        print(f"Successfully analyzed video with {len(shot_detections)} shot detections")
+        
+    except Exception as e:
+        print(f"Error during video analysis: {e}")
+        return []
+    finally:
+        # 确保 VideoCapture 被正确释放
+        cap.release()
+        # 强制垃圾回收
+        import gc
+        gc.collect()
     
-    # 去除重复检测（基于时间距离）
     filtered_detections = remove_duplicate_detections(shot_detections, min_time_gap=clip_info.before_secs + clip_info.after_secs)
     
     return filtered_detections
@@ -266,12 +302,15 @@ def extract_shot_clips(video_path, shot_detections, before_seconds=2.0, after_se
             output_filename = f"shot_{extracted_count}_frame{key_frame}_t{timestamp:.1f}s_conf{confidence:.3f}.mp4"
             output_path = os.path.join(output_dir, output_filename)
             
-            # 提取视频片段
-            extract_video_segment(video_path, start_frame, end_frame, output_path)
-            print(f"Extracted clip: {output_filename}")
-            
-            # 记录已提取的范围
-            extracted_ranges.append((start_frame, end_frame))
+            # 提取视频片段，检查是否成功
+            success = extract_video_segment(video_path, start_frame, end_frame, output_path)
+            if success:
+                print(f"Extracted clip: {output_filename}")
+                # 记录已提取的范围
+                extracted_ranges.append((start_frame, end_frame))
+            else:
+                print(f"Failed to extract clip: {output_filename}")
+                extracted_count -= 1  # 减少计数器，因为提取失败
     
     cap.release()
     print(f"Total extracted clips: {extracted_count} out of {len(shot_detections)} detections")
@@ -281,25 +320,67 @@ def extract_video_segment(input_path, start_frame, end_frame, output_path):
     提取视频片段
     """
     cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        print(f"Error: Cannot open input video {input_path}")
+        return False
+        
     fps = cap.get(cv2.CAP_PROP_FPS)
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # 设置视频编码器 使用H.264编码以获得更好的浏览器兼容性
-    fourcc = cv2.VideoWriter_fourcc(*'h264')
+    # 验证视频参数
+    if fps <= 0 or width <= 0 or height <= 0:
+        print(f"Error: Invalid video parameters - fps:{fps}, width:{width}, height:{height}")
+        cap.release()
+        return False
+    
+    # 使用更兼容的编码器设置
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 改用 mp4v 编码器，更兼容
     out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    # 检查 VideoWriter 是否成功初始化
+    if not out.isOpened():
+        print(f"Error: Cannot create output video writer for {output_path}")
+        cap.release()
+        return False
     
     # 跳到开始帧
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     
+    frames_written = 0
     for frame_idx in range(start_frame, end_frame):
         ret, frame = cap.read()
         if not ret:
+            print(f"Warning: Cannot read frame {frame_idx}")
             break
+        
+        # 验证帧数据
+        if frame is None or frame.size == 0:
+            print(f"Warning: Empty frame at {frame_idx}")
+            continue
+            
         out.write(frame)
+        frames_written += 1
     
     cap.release()
     out.release()
+    
+    # 验证输出文件
+    if os.path.exists(output_path):
+        file_size = os.path.getsize(output_path)
+        if file_size < 1000:  # 如果文件小于1KB，认为是损坏的
+            print(f"Error: Output file {output_path} is too small ({file_size} bytes), possibly corrupted")
+            try:
+                os.remove(output_path)  # 删除损坏的文件
+            except:
+                pass
+            return False
+        else:
+            print(f"Successfully extracted {frames_written} frames to {output_path} ({file_size} bytes)")
+            return True
+    else:
+        print(f"Error: Output file {output_path} was not created")
+        return False
 
 def load_model():
     # 初始化模型
@@ -318,6 +399,13 @@ def load_model():
     model.load_state_dict(new_state)
     model.to(device)
     model.eval()  # 设置为评估模式
+
+    # 清理加载时的临时变量
+    del ckpt, state_dict, new_state
+    if device.type == 'mps':
+        torch.mps.empty_cache()
+    elif device.type == 'cuda':
+        torch.cuda.empty_cache()
 
     print(f'Model loaded successfully on {device}')
     return model
@@ -373,5 +461,17 @@ def process_video(clip_info: ClipInfo, video_path: str) -> ShotResult:
         confidence=[detection['confidence'] for detection in shot_detections],
         clip_path=[f'backend/clips/{f}' for f in os.listdir(clips_dir) if f.endswith('.mp4')] if os.path.exists(clips_dir) else []
     )
+
+    # 清理资源
+    try:
+        del model
+        if device.type == 'mps':
+            torch.mps.empty_cache()
+        elif device.type == 'cuda':
+            torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+    except Exception as e:
+        print(f"Warning: Error during resource cleanup: {e}")
 
     return shot_result

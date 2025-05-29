@@ -14,6 +14,7 @@ backend/uploads/.DS_Store
 backend/uploads/.idea
 backend/uploads/.vscode
 backend/.venv
+backend/old_clips
 
 
 **/__pycache__

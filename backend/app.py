@@ -1,5 +1,7 @@
 import os
 import unicodedata
+import atexit
+import gc
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -140,6 +142,7 @@ def process_videos():
     # 处理视频
     if specific_filename:
         # 处理特定视频
+        print(f"process specific video: {specific_filename}")
         if allowed_file(specific_filename):
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], specific_filename)
             if os.path.exists(filepath):
@@ -175,6 +178,7 @@ def process_videos():
                     'message': f'File {specific_filename} not found'
                 }), 404
     else:
+        print(f"process all videos")
         # 处理所有视频
         results = []
         all_clips = []
@@ -218,35 +222,81 @@ def merge_clips(clip_paths):
     """合并多个视频片段为一个视频"""
     try:
         from moviepy.editor import VideoFileClip, concatenate_videoclips
+        import tempfile
+        import atexit
         
         # 确保clips文件夹存在
         clips_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clips')
         
         # 加载所有片段
         clips = []
-        for clip_path in clip_paths:
-            full_path = os.path.join(clips_folder, clip_path if not '/' in clip_path else os.path.basename(clip_path))
-            if os.path.exists(full_path):
-                clips.append(VideoFileClip(full_path))
+        temp_files = []
         
-        if not clips:
-            print("No valid clips to merge")
-            return None
-        
-        # 合并片段
-        final_clip = concatenate_videoclips(clips)
-        
-        # 保存合并后的视频
-        output_path = os.path.join(clips_folder, "merged_video.mp4")
-        final_clip.write_videofile(output_path, codec='libx264', audio_codec='aac')
-        
-        # 关闭所有视频对象
-        for clip in clips:
-            clip.close()
-        final_clip.close()
+        try:
+            for clip_path in clip_paths:
+                full_path = os.path.join(clips_folder, clip_path if not '/' in clip_path else os.path.basename(clip_path))
+                if os.path.exists(full_path):
+                    clip = VideoFileClip(full_path)
+                    clips.append(clip)
+            
+            if not clips:
+                print("No valid clips to merge")
+                return None
+            
+            # 合并片段
+            final_clip = concatenate_videoclips(clips, method='compose')
+            
+            # 保存合并后的视频
+            output_path = os.path.join(clips_folder, "merged_video.mp4")
+            
+            # 使用临时文件避免资源冲突
+            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_file:
+                temp_path = temp_file.name
+                temp_files.append(temp_path)
+            
+            # 写入临时文件
+            final_clip.write_videofile(
+                temp_path, 
+                codec='libx264', 
+                audio_codec='aac',
+                verbose=False,
+                logger=None
+            )
+            
+            # 移动到最终位置
+            import shutil
+            shutil.move(temp_path, output_path)
+            
+        finally:
+            # 确保所有资源都被释放
+            for clip in clips:
+                try:
+                    if hasattr(clip, 'close'):
+                        clip.close()
+                    if hasattr(clip, 'reader') and clip.reader:
+                        clip.reader.close()
+                except:
+                    pass
+            
+            try:
+                if 'final_clip' in locals():
+                    final_clip.close()
+                    if hasattr(final_clip, 'reader') and final_clip.reader:
+                        final_clip.reader.close()
+            except:
+                pass
+            
+            # 清理临时文件
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                except:
+                    pass
         
         print(f"Merged video saved to {output_path}")
         return "merged_video.mp4"
+        
     except Exception as e:
         print(f"Error merging clips: {e}")
         return None
@@ -287,5 +337,16 @@ def clear_all_data():
             'message': f'Error clearing data: {str(e)}'
         }), 500
 
+def cleanup():
+    """应用退出时的资源清理函数"""
+    try:
+        # 强制垃圾回收
+        gc.collect()
+        print("Application cleanup completed")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
 if __name__ == '__main__':
+    # 注册退出时的清理函数
+    atexit.register(cleanup)
     app.run(debug=True, host='0.0.0.0', port=50001) 
