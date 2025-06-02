@@ -92,7 +92,7 @@ async function uploadFile(file, index) {
   formData.append('file', file.raw)
   
   try {
-    const response = await fetch('http://localhost:50001/api/upload-video', {
+    const response = await fetch('/api/upload-video', {
       method: 'POST',
       body: formData,
     })

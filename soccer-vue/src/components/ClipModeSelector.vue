@@ -132,7 +132,7 @@ async function onConfirm() {
   isSubmitting.value = true
 
   try {
-    const response = await fetch('http://localhost:50001/api/clip-mode', {
+    const response = await fetch('/api/clip-mode', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -167,7 +167,7 @@ async function startProcessing() {
   isProcessing.value = true
 
   try {
-    const response = await fetch('http://localhost:50001/api/process-video', {
+    const response = await fetch('/api/process-video', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -217,7 +217,7 @@ function clearAllData() {
     }
   ).then(() => {
     // 发送API请求清除服务器上的文件
-    fetch('http://localhost:50001/api/clear-all', {
+    fetch('/api/clear-all', {
       method: 'POST',
     }).then(response => {
       if (response.ok) {

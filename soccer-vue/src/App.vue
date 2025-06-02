@@ -37,7 +37,7 @@ async function onProcessStart(resultFromEvent) {
       result = resultFromEvent;
     } else {
       // 否则发起请求获取结果
-      const response = await fetch('http://localhost:50001/api/process-video', {
+      const response = await fetch('/api/process-video', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -59,7 +59,7 @@ async function onProcessStart(resultFromEvent) {
         
         // 保存合成视频的URL
         if (result.merged_video) {
-          mergedVideoUrl.value = `http://localhost:50001/api/download/${result.merged_video}`
+          mergedVideoUrl.value = `/api/download/${result.merged_video}`
         }
       } else if (result.shot_result) {
         // 单个视频的结果
@@ -68,7 +68,7 @@ async function onProcessStart(resultFromEvent) {
         
         // 如果有合成视频
         if (result.merged_video) {
-          mergedVideoUrl.value = `http://localhost:50001/api/download/${result.merged_video}`
+          mergedVideoUrl.value = `/api/download/${result.merged_video}`
         }
       }
       
@@ -106,7 +106,7 @@ function previewClip(clipPath) {
   const filename = clipPath.includes('/') ? clipPath.split('/').pop() : clipPath
   
   // 设置预览视频的路径
-  const videoUrl = `http://localhost:50001/api/download/${filename}`
+  const videoUrl = `/api/download/${filename}`
   previewVideo.value = videoUrl
   
   // 同时更新下载链接

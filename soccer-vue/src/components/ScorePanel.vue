@@ -144,7 +144,8 @@ function downloadClip(clipPath) {
   
   // 创建下载链接
   const link = document.createElement('a')
-  link.href = `http://localhost:50001/api/download/${filename}`
+  // link.href = `http://localhost:50001/api/download/${filename}`/
+  link.href = `/api/download/${filename}`
   link.download = filename
   document.body.appendChild(link)
   link.click()
