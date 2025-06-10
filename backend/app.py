@@ -85,16 +85,34 @@ def get_videos():
             videos.append(filename)
     return jsonify(videos)
 
-@app.route('/api/download/<filename>')
+@app.route('/api/download/<path:filename>')
 def download_file(filename):
     # 尝试从上传文件夹获取
-    if os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], filename)):
+    upload_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if os.path.exists(upload_path):
         return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
     
-    # 尝试从clips文件夹获取
+    # 尝试从clips文件夹获取（支持嵌套路径）
     clips_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clips')
-    if os.path.exists(os.path.join(clips_folder, filename)):
-        return send_from_directory(clips_folder, filename, as_attachment=True)
+    
+    # 如果filename包含路径分隔符，直接使用相对路径
+    if '/' in filename or '\\' in filename:
+        clip_path = os.path.join(clips_folder, filename)
+        if os.path.exists(clip_path):
+            # 分离目录和文件名
+            dir_path, file_name = os.path.split(filename)
+            full_dir_path = os.path.join(clips_folder, dir_path)
+            return send_from_directory(full_dir_path, file_name, as_attachment=True)
+    else:
+        # 如果filename只是文件名，搜索所有子目录
+        clip_path = os.path.join(clips_folder, filename)
+        if os.path.exists(clip_path):
+            return send_from_directory(clips_folder, filename, as_attachment=True)
+        
+        # 在子目录中搜索
+        for root, dirs, files in os.walk(clips_folder):
+            if filename in files:
+                return send_from_directory(root, filename, as_attachment=True)
     
     # 文件不存在
     return jsonify({'error': f'File not found: {filename}'}), 404
@@ -234,14 +252,43 @@ def merge_clips(clip_paths):
         
         try:
             for clip_path in clip_paths:
-                full_path = os.path.join(clips_folder, clip_path if not '/' in clip_path else os.path.basename(clip_path))
-                if os.path.exists(full_path):
+                # 处理不同的路径格式
+                full_path = None
+                
+                if os.path.isabs(clip_path):
+                    # 绝对路径，直接使用
+                    full_path = clip_path
+                elif clip_path.startswith('clips/'):
+                    # 相对于项目根目录的路径
+                    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    full_path = os.path.join(project_root, clip_path)
+                elif '/' in clip_path:
+                    # 包含路径分隔符，相对于clips文件夹
+                    full_path = os.path.join(clips_folder, clip_path)
+                else:
+                    # 只是文件名，在clips文件夹及其子目录中搜索
+                    full_path = os.path.join(clips_folder, clip_path)
+                    if not os.path.exists(full_path):
+                        # 在子目录中搜索
+                        for root, dirs, files in os.walk(clips_folder):
+                            if os.path.basename(clip_path) in files:
+                                full_path = os.path.join(root, os.path.basename(clip_path))
+                                break
+                
+                print(f"Attempting to load clip: {clip_path} -> {full_path}")
+                
+                if full_path and os.path.exists(full_path):
                     clip = VideoFileClip(full_path)
                     clips.append(clip)
+                    print(f"Successfully loaded clip: {full_path}")
+                else:
+                    print(f"Warning: Clip file not found: {clip_path} (resolved to: {full_path})")
             
             if not clips:
                 print("No valid clips to merge")
                 return None
+            
+            print(f"Merging {len(clips)} clips...")
             
             # 合并片段
             final_clip = concatenate_videoclips(clips, method='compose')
@@ -313,14 +360,17 @@ def clear_all_data():
                 os.remove(filepath)
                 print(f"Deleted uploaded file: {filepath}")
         
-        # 清空clips文件夹
+        # 清空clips文件夹（包括子目录）
         clips_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'clips')
         if os.path.exists(clips_folder):
-            for filename in os.listdir(clips_folder):
-                filepath = os.path.join(clips_folder, filename)
-                if os.path.isfile(filepath):
-                    os.remove(filepath)
-                    print(f"Deleted clip file: {filepath}")
+            import shutil
+            # 删除整个clips目录及其内容
+            shutil.rmtree(clips_folder)
+            print(f"Deleted clips folder: {clips_folder}")
+            
+            # 重新创建空的clips目录
+            os.makedirs(clips_folder, exist_ok=True)
+            print(f"Recreated empty clips folder: {clips_folder}")
         
         # 重置全局变量
         global current_clip_info

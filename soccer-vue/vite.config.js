@@ -18,9 +18,10 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://connect.cqa1.seetacloud.com:50001',
+        target: 'http://localhost:50001',
         changeOrigin: true,
-        secure: false
+        secure: false,
+        timeout: 60000
       }
     }
   }

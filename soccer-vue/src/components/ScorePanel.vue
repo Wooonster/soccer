@@ -132,21 +132,62 @@ function getTableData(result) {
 
 // 预览视频片段
 function previewClip(clipPath) {
-  // 从路径中提取文件名
-  const filename = clipPath.split('/').pop()
+  console.log('Preview clip path:', clipPath)
+  
+  // 处理不同的路径格式
+  let filename = clipPath
+  
+  // 如果clipPath是完整路径（包含目录），提取相对于clips目录的路径
+  if (clipPath.includes('/clips/')) {
+    // 从完整路径中提取clips目录后的相对路径
+    const clipIndex = clipPath.indexOf('/clips/')
+    filename = clipPath.substring(clipIndex + 7) // 7是'/clips/'的长度
+  } else if (clipPath.includes('\\clips\\')) {
+    // Windows路径格式
+    const clipIndex = clipPath.indexOf('\\clips\\')
+    filename = clipPath.substring(clipIndex + 8).replace(/\\/g, '/') // 转换为正斜杠
+  } else if (clipPath.startsWith('clips/')) {
+    // 相对路径格式
+    filename = clipPath.substring(6) // 去掉'clips/'前缀
+  } else if (clipPath.includes('/')) {
+    // 如果包含路径分隔符但不是完整路径，保持原样
+    filename = clipPath
+  } else {
+    // 只是文件名，保持原样
+    filename = clipPath
+  }
+  
+  console.log('Processed filename for preview:', filename)
   emit('preview-clip', filename)
 }
 
 // 下载视频片段
 function downloadClip(clipPath) {
-  // 从路径中提取文件名
-  const filename = clipPath.split('/').pop()
+  console.log('Download clip path:', clipPath)
+  
+  // 处理不同的路径格式（与previewClip相同的逻辑）
+  let filename = clipPath
+  
+  if (clipPath.includes('/clips/')) {
+    const clipIndex = clipPath.indexOf('/clips/')
+    filename = clipPath.substring(clipIndex + 7)
+  } else if (clipPath.includes('\\clips\\')) {
+    const clipIndex = clipPath.indexOf('\\clips\\')
+    filename = clipPath.substring(clipIndex + 8).replace(/\\/g, '/')
+  } else if (clipPath.startsWith('clips/')) {
+    filename = clipPath.substring(6)
+  } else if (clipPath.includes('/')) {
+    filename = clipPath
+  } else {
+    filename = clipPath
+  }
+  
+  console.log('Processed filename for download:', filename)
   
   // 创建下载链接
   const link = document.createElement('a')
-  // link.href = `http://localhost:50001/api/download/${filename}`/
   link.href = `/api/download/${filename}`
-  link.download = filename
+  link.download = filename.split('/').pop() // 下载时使用文件名
   document.body.appendChild(link)
   link.click()
   document.body.removeChild(link)

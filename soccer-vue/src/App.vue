@@ -102,8 +102,30 @@ async function onProcessStart(resultFromEvent) {
 function previewClip(clipPath) {
   if (!clipPath) return
   
-  // 如果是完整路径，提取文件名
-  const filename = clipPath.includes('/') ? clipPath.split('/').pop() : clipPath
+  console.log('App.vue previewClip - Original clip path:', clipPath)
+  
+  // 处理不同的路径格式
+  let filename = clipPath
+  
+  // 如果clipPath是完整路径（包含目录），提取相对于clips目录的路径
+  if (clipPath.includes('/clips/')) {
+    // 从完整路径中提取clips目录后的相对路径
+    const clipIndex = clipPath.indexOf('/clips/')
+    filename = clipPath.substring(clipIndex + 7) // 7是'/clips/'的长度
+  } else if (clipPath.includes('\\clips\\')) {
+    // Windows路径格式
+    const clipIndex = clipPath.indexOf('\\clips\\')
+    filename = clipPath.substring(clipIndex + 8).replace(/\\/g, '/') // 转换为正斜杠
+  } else if (clipPath.startsWith('clips/')) {
+    // 相对路径格式
+    filename = clipPath.substring(6) // 去掉'clips/'前缀
+  } else if (clipPath.includes('/')) {
+    // 如果包含路径分隔符但不是完整路径，保持原样
+    filename = clipPath
+  } else {
+    // 只是文件名，保持原样
+    filename = clipPath
+  }
   
   // 设置预览视频的路径
   const videoUrl = `/api/download/${filename}`
@@ -112,9 +134,8 @@ function previewClip(clipPath) {
   // 同时更新下载链接
   downloadUrl.value = previewVideo.value
   
-  console.log('Preview video URL:', videoUrl)
-  console.log('Original clip path:', clipPath)
-  console.log('Extracted filename:', filename)
+  console.log('App.vue previewClip - Processed filename:', filename)
+  console.log('App.vue previewClip - Video URL:', videoUrl)
 }
 
 // 下载合成视频
