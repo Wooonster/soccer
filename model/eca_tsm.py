@@ -20,17 +20,15 @@ print(f"device detected: {device}")
 # ------------------------------------------------------------------
 
 class FrameSequenceDataset(Dataset):
-    def __init__(self, root_dir, n_frames=8, transform=None, train=True):
+    def __init__(self, root_dir, transform=None, train=True):
         """
-        Dataset for loading frame sequences with fixed length through sampling.
+        Dataset for loading frame sequences with dynamic length for each sequence.
         
         Args:
             root_dir: Path to dataset root (contains 'shot' and 'other' folders)
-            n_frames: Number of frames to sample per sequence
             transform: Transformations to apply
             train: If True, use training set, else validation set
         """
-        self.n_frames = n_frames
         self.transform = transform
         self.train = train
         
@@ -81,7 +79,8 @@ class FrameSequenceDataset(Dataset):
                             'path': class_path,
                             'class_idx': class_idx,
                             'frames': sorted_frames,
-                            'shot_key': shot_key
+                            'shot_key': shot_key,
+                            'n_frames': len(sorted_frames),
                         })
                         self.class_counts[class_idx] += 1
         
@@ -111,18 +110,10 @@ class FrameSequenceDataset(Dataset):
         frames = seq_info['frames']
         class_idx = seq_info['class_idx']
         path = seq_info['path']
+        n_frames = seq_info['n_frames']
         
-        # Sample n_frames from available frames
-        if len(frames) >= self.n_frames:
-            # If we have enough frames, sample evenly
-            indices = np.linspace(0, len(frames)-1, self.n_frames, dtype=int)
-            sampled_frames = [frames[i] for i in indices]
-        else:
-            # If we don't have enough frames,  repeat frames with duplicating from the beginning
-            sampled_frames = []
-            while len(sampled_frames) < self.n_frames:
-                sampled_frames.extend(frames)
-            sampled_frames = sampled_frames[:self.n_frames]
+        # Use all available frames for each sequence (dynamic length)
+        sampled_frames = frames  # Simply use all frames in the sequence
         
         # Load and transform frames
         frame_tensors = []
@@ -136,7 +127,31 @@ class FrameSequenceDataset(Dataset):
         # Stack frames along batch dimension
         frames_tensor = torch.stack(frame_tensors)
         
-        return frames_tensor, class_idx
+        return frames_tensor, class_idx, n_frames  # Return actual frame count
+
+def collate_fn(batch):
+    """Custom collate function to handle variable-length sequences"""
+    frames_list, labels, frame_counts = zip(*batch)
+    
+    # Find max length in this batch
+    max_len = max(frame_counts)
+    
+    # Pad sequences to max length by repeating the last frame
+    padded_frames = []
+    for frames, actual_len in zip(frames_list, frame_counts):
+        if actual_len < max_len:
+            # Pad by repeating the last frame
+            last_frame = frames[-1:].repeat(max_len - actual_len, 1, 1, 1)
+            padded_sequence = torch.cat([frames, last_frame], dim=0)
+        else:
+            padded_sequence = frames
+        padded_frames.append(padded_sequence)
+    
+    # Stack all sequences
+    batched_frames = torch.stack(padded_frames)
+    batched_labels = torch.tensor(labels)
+    
+    return batched_frames, batched_labels
 
 def train_val_model(model, train_loader, val_loader, device, n_epochs=20, lr=0.001, class_weights=None):
     """Train and validate the model"""
@@ -319,7 +334,7 @@ if __name__ == "__main__":
         torch.cuda.manual_seed(seed)
     
     # Main execution
-    n_frames = 8  # Number of frames to sample per video sequence
+    # n_frames = 8  # Number of frames to sample per video sequence
     batch_size = 16
     
     # Data transformations
@@ -342,14 +357,12 @@ if __name__ == "__main__":
     # Create datasets
     train_dataset = FrameSequenceDataset(
         root_dir='figprocess',
-        n_frames=n_frames,
         transform=train_transform,
         train=True
     )
     
     val_dataset = FrameSequenceDataset(
         root_dir='figprocess',
-        n_frames=n_frames,
         transform=val_transform,
         train=False
     )
@@ -374,7 +387,8 @@ if __name__ == "__main__":
         shuffle=train_shuffle,
         sampler=sampler,
         num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
     
     val_loader = DataLoader(
@@ -382,11 +396,16 @@ if __name__ == "__main__":
         batch_size=batch_size,
         shuffle=False,
         num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        collate_fn=collate_fn
     )
     
+    # Find maximum sequence length for TSM configuration
+    max_frames = max(seq['n_frames'] for seq in train_dataset.sequences)
+    print(f"Maximum sequence length found: {max_frames} frames")
+    
     # Load model
-    model = load_model(num_classes=2, n_segment=n_frames, n_div=8)
+    model = load_model(num_classes=2, n_segment=max_frames, n_div=8)
     model = model.to(device)
     
     # Train model with class weights in loss function
